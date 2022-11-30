@@ -1,153 +1,98 @@
-import sys
-import logging
+import torch
+import numpy as np
+import cv2
 
-from PyQt5.QtWidgets import QMessageBox
-from src.DB import *
-from src.Lang import Lang
-from src.flight.ui_main_window import *
-from src.flight.repository import *
-from src.flight.Buttons import *
-from src.ticket.ui_buy_ticket_window import *
-from src.ticket.repository import *
+CONFIDENCE = 0.60
+MARGIN = 100
 
-from detection.main import *
-import faceRecognition
-from pydispatch import dispatcher
+model = torch.hub.load(
+    "ultralytics/yolov5",
+    "custom",force_reload=True,
+   path="./model/train/exp/weights/last.pt",
+)
 
-logging.basicConfig(level=logging.INFO)
+#model = torch.hub.load('ultralytics/yolov5', 'custom', path='./detection/last.pt', force_reload=True).autoshape()
 
+def runFaceDetection(name):
+    cap = cv2.VideoCapture(0)
+    while cap.isOpened():
+        ret, frame = cap.read()
+        results = model(frame)
+        getFaces(results, frame, name, cap)
 
-class MainWindow(QtWidgets.QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.uiMain = Ui_mainWindow()
-        self.uiMain.setupUi(self)
+        frameWithFaces = results.render()
 
-        # create the database and display them in the table
-        db = DB()
-        db.create()
-        db.fillFlightTable()
-        self.updateFlightTable()
-        self.clearPassengerData()
-        dispatcher.connect(
-            self.listenFaceRecognition,
-            sender=faceRecognition.MyNode,
-            signal=faceRecognition.metaKey,
+        center = (
+            int(frameWithFaces[0].shape[1] / 2),
+            int(frameWithFaces[0].shape[0] / 2),
         )
-        self.uiMain.identifyYourselfBtn.clicked.connect(self.openFaceRecognition)
 
-    def updateFlightTable(self):
-        flightStg = FlightStg()
-        data, error = flightStg.findAll()
-        if error is not None:
-            QMessageBox.critical(self, Lang.appName, str(error))
-            return
+        p1 = (
+            center[0] - 100,
+            center[1] - 100,
+        )
 
-        self.uiMain.flightTable.setRowCount(len(data))
-        self.uiMain.flightTable.setEditTriggers(QtWidgets.QTableWidget.NoEditTriggers)
+        p2 = (
+            center[0] + 100,
+            center[1] + 100,
+        )
 
-        tableRow = 0
-        for row in data:
-            # add the values from the database into the table
-            self.uiMain.flightTable.setItem(
-                tableRow, 0, QtWidgets.QTableWidgetItem(row[1])
-            )
-            self.uiMain.flightTable.setItem(
-                tableRow, 1, QtWidgets.QTableWidgetItem(row[2])
-            )
-            self.uiMain.flightTable.setItem(
-                tableRow, 2, QtWidgets.QTableWidgetItem(row[3])
-            )
-            self.uiMain.flightTable.setItem(
-                tableRow, 3, QtWidgets.QTableWidgetItem(str(row[4]))
-            )
+        frameWithRect = cv2.rectangle(
+            np.squeeze(frameWithFaces), p1, p2, (0, 255, 0), 2
+        )
 
-            # add the buttons to the table
-            buttons = Buttons()
-            buyButton = buttons.buyButton()
-            self.uiMain.flightTable.setCellWidget(tableRow, 4, buyButton)
+        frameWithText = cv2.putText(
+            frameWithRect,
+            "Try to get in the frame and press S to take a photo.",
+            (30, 20),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 0, 0),
+            2,
+        )
 
-            buyButton.clicked.connect(self.opeBuyTicketWindow)
+        frameWithText = cv2.putText(
+            frameWithRect,
+            "The window will close automatically",
+            (30, 50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 0, 0),
+            2,
+        )
 
-            tableRow += 1
+        cv2.imshow("YOLO", frameWithText)
 
-    def opeBuyTicketWindow(self):
-        button = QtWidgets.QApplication.focusWidget()
-        index = self.uiMain.flightTable.indexAt(button.pos())
-        if index.isValid():
-            flightStg = FlightStg()
-            flights, error = flightStg.findAll()
+        if cv2.waitKey(10) & 0xFF == ord("q"):
+            break
+    cap.release()
+    cv2.destroyAllWindows()
 
-            if error:
-                logging.critical(str(error))
-                return
 
-            self.window = QtWidgets.QMainWindow()
-            self.uiBuyTicket = Ui_buyTicketWindow()
-            self.uiBuyTicket.setupUi(self.window)
-            self.window.show()
+def getFaces(results, frame, name, cap):
+    faces = []
+    for i, dets in enumerate(results.xyxy[0]):
+        if dets[4] > CONFIDENCE and dets[5] == 0:
+            xMin = int(dets[0].numpy())
+            yMin = int(dets[1].numpy())
+            xMax = int(dets[2].numpy())
+            yMax = int(dets[3].numpy())
 
-            self.uiBuyTicket.bookFlightBtn.clicked.connect(self.openFaceDetectionWindow)
-            self.uiBuyTicket.finishBuyBtn.clicked.connect(
-                lambda: self.finishBooked(flights[index.row()])
-            )
+            height = yMax - yMin
+            width = xMax - xMin
 
-    def openFaceDetectionWindow(
-        self,
-    ):
-        name = self.uiBuyTicket.nameTxt.text()
-        if name == "":
-            QMessageBox.critical(self, Lang.appName, Lang.nameRequired)
-            return
-        runFaceDetection(name)
-
-    def finishBooked(self, flight):
-        name = self.uiBuyTicket.nameTxt.text()
-        ticketStg = TicketStg()
-        error = ticketStg.insert(name, flight)
-
-        if error:
-            logging.critical(str(error))
-            QMessageBox.critical(self, Lang.appName, Lang.failSave)
-            return
-        QMessageBox.information(self, Lang.appName, Lang.successfulSave)
-        self.window.close()
-
-    def openFaceRecognition(
-        self,
-    ):
-        print("opening recognition")
-        faceRecognition.detectFace()
-
-    def clearPassengerData(
-        self,
-    ):
-        self.uiMain.destinationLbl.setText("")
-        self.uiMain.dateDepartureLbl.setText("")
-        self.uiMain.hourDepartureLbl.setText("")
-        self.uiMain.nameLbl.setText("")
-        self.uiMain.priceLbl.setText("")
-
-    def listenFaceRecognition(self, event=None):
-        print("event received")
-
-        if event != None:
-            ticket = event["ticket"]
-            flight = event["flight"]
-            self.uiMain.nameLbl.setText(ticket[1])
-            self.uiMain.destinationLbl.setText(flight[1])
-            self.uiMain.dateDepartureLbl.setText(flight[2])
-            self.uiMain.hourDepartureLbl.setText(flight[3])
-            self.uiMain.priceLbl.setText(str(flight[4]))
-        else:
-            self.clearPassengerData()
+            if cv2.waitKey(10) & 0xFF == ord("s"):
+                print("Image Saved")
+                cropped_image = frame[
+                    yMin - int(MARGIN * 1.5) : yMin + height + MARGIN,
+                    xMin - MARGIN : xMin + width + MARGIN,
+                ]
+                cv2.imwrite("./public/images/" + name + ".jpg", cropped_image)
+                cap.release()
+                cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
-    logging.info(Lang.runningApp + Lang.appName)
-    app = QtWidgets.QApplication(sys.argv)
-    mainWindow = MainWindow()
-    mainWindow.show()
-    sys.exit(app.exec_())
+    runFaceDetection()
 
-# self.flightTable.horizontalHeader().setSectionResizeMode(1)
+# python detect.py --weights runs/train/exp/weights/best.pt --img 416 --conf 0.1 --source 0
