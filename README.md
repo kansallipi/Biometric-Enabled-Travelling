@@ -1,4 +1,4 @@
-# faceRecognition
+# FaceRecognition - Sem V MI Project
 A biometric enabled travel system based on Facial Recognition Technology which will facilitate paperless travel and avoid multiple identity checks at the airport enabling seamless and hassle-free travel.
 
 The project consists of two modules :
