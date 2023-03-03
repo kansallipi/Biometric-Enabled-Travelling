@@ -17,6 +17,6 @@ In order to run the project
 - The name and image will be stored in database.
 - When the passenger has to board the flight click on Sign in with Camera.
 - If the system recognises your face a green rectangle with your name will show up.
-- Voila! you are ready to go.
+- yes! you are ready to go.
 
 
